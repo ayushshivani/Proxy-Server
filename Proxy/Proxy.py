@@ -1,12 +1,57 @@
-import socket 
-import threading
+import base64
+import copy
 import _thread as thread
+import socket
+import sys
 import os
+import datetime
+import time
+import json
+import threading
+import email.utils as eut
 
 BUFFER_SIZE = 1024
 logs={}
-lock={}
+locks={}
 CACHE_DIR = "./cache"
+BLACKLIST_FILE = "blacklist.txt"
+USERNAME_PASSWORD_FILE = "username_password.txt"
+blocked = []
+admins = []
+
+
+
+if not os.path.isdir(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
+
+f = open(BLACKLIST_FILE, "rb")
+data = ""
+while True:
+    chunk = f.read()
+    if not len(chunk):
+        break
+    data += str(chunk)
+f.close()
+blocked = data.splitlines()
+
+f = open(USERNAME_PASSWORD_FILE, "rb")
+data = ""
+while True:
+    chunk = f.read()
+    if not len(chunk):
+        break
+    data += str(chunk)
+f.close()
+data = data.splitlines()
+for d in data:
+    admins.append(base64.b64encode(bytes(d,'utf-8')))
+
+for file in os.listdir(CACHE_DIR):
+    os.remove(CACHE_DIR + "/" + file)
+
+
+
+
 
 def mutex_lock(file):
     if file not in locks:
@@ -26,7 +71,7 @@ def mutex_unlock(file):
 def make_info(client_addr, client_data):
 
     url = client_data[1]
-
+    lines = client_data
     colon = url.find("://")
     if colon != -1:
         protocol = url[:colon]
@@ -41,27 +86,26 @@ def make_info(client_addr, client_data):
 
     if path_pos == -1:
         path_pos = len(url)
-    
     if port_pos>=0 and port_pos <= path_pos:
         server_port = int(url[(port_pos+1):path_pos])
         server_url = url[0:port_pos]
+    # print(port_pos,path_pos,url,server_url)
 
-    # auth_line = [ line for line in lines if "Authorization" in line]
-    # if len(auth_line):
-    #     auth_b64 = auth_line[0].split()[2]
-    # else:
-    #     auth_b64 = None
+    auth_line = [ line for line in lines if "Authorization" in line]
+    if len(auth_line):
+        auth_b64 = auth_line[0].split()[2]
+    else:
+        auth_b64 = None
 
-    return
-    {
-        "protocol" : protocol,
-        "method" : client_data[0],
+
+    ret={"protocol" : protocol,"method" : client_data[0],
         "auth_b64" : auth_b64,
         "total_url" : url,
         "server_url" : server_url,
         "server_port" : server_port,
         "client_data" : client_data,
     }
+    return ret
 
 def is_blocked(client_socket, client_addr, info):
 
@@ -120,20 +164,20 @@ def get_cache_info(client_addr, info):
     return info
 
 
-def insert_if_modified(details):
+def insert_if_modified(info):
 
-    lines = details["client_data"].splitlines()
+    lines = info["client_data"].splitlines()
     while lines[len(lines)-1] == '':
         lines.remove('')
 
-    #header = "If-Modified-Since: " + time.strptime("%a %b %d %H:%M:%S %Y", details["last_mtime"])
-    header = time.strftime("%a %b %d %H:%M:%S %Y", details["last_mtime"])
+    #header = "If-Modified-Since: " + time.strptime("%a %b %d %H:%M:%S %Y", info["last_mtime"])
+    header = time.strftime("%a %b %d %H:%M:%S %Y", info["last_mtime"])
     header = "If-Modified-Since: " + header
     lines.append(header)
 
-    details["client_data"] = "\r\n".join(lines) + "\r\n\r\n"
+    info["client_data"] = "\r\n".join(lines) + "\r\n\r\n"
 
-    return details
+    return info
 
 def aux_send(cache_path,client_socket,info):
 	mutex_lock(info["total_url"])
@@ -163,8 +207,34 @@ def modify_cache():
     for file in cache_files:
         mutex_unlock(file)
 
+def serve_post(client_socket, client_addr, info,original):
+    try:
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.connect((info["server_url"], info["server_port"]))
+        print(info["client_data"])
+        server_socket.send(original)
 
-def serve_get(client_socket, client_addr, info):
+        while True:
+            reply = server_socket.recv(BUFFER_SIZE)
+            if len(reply):
+                client_socket.send(reply)
+            else:
+                break
+
+        server_socket.close()
+        client_socket.close()
+        print("ass")
+        return
+
+    except Exception as e:
+        server_socket.close()
+        client_socket.close()
+        print(e)
+        return
+
+
+
+def serve_get(client_socket, client_addr, info,original):
     try:
         
         client_data = info["client_data"]
@@ -174,7 +244,7 @@ def serve_get(client_socket, client_addr, info):
 
         proxy_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         proxy_socket.connect((info["server_url"], info["server_port"]))
-        proxy_socket.send(info["client_data"])
+        proxy_socket.send(original)
 
         reply_server = proxy_socket.recv(BUFFER_SIZE)
         checkstr = "304 Not Modified"
@@ -218,7 +288,7 @@ def serve_get(client_socket, client_addr, info):
 
 
 
-def Request_handler(client_socket,client_addr,client_data):
+def Request_handler(client_socket,client_addr,client_data,original):
 	
 	info = make_info(client_addr, client_data)
 	if not info:
@@ -226,7 +296,7 @@ def Request_handler(client_socket,client_addr,client_data):
 		client_socket.close()
 		return
 	
-	isb = is_blocked(client_socket, client_addr, details)
+	isb = is_blocked(client_socket, client_addr, info)
 	if isb:
 		print("Block status : ", isb)
 		client_socket.send("HTTP/1.0 200 OK\r\n")
@@ -240,14 +310,14 @@ def Request_handler(client_socket,client_addr,client_data):
 	    info = get_cache_info(client_addr, info)
 	    if info["last_mtime"]:
 	        info = insert_if_modified(info)
-	    serve_get(client_socket, client_addr, info)
+	    serve_get(client_socket, client_addr, info,original)
 
 	elif info["method"] == "POST":
-	    serve_post(client_socket, client_addr, info)
+	    serve_post(client_socket, client_addr, info,original)
 
 	client_socket.close()
 
-	print (client_addr + "closed")
+	print (client_addr[0] + "closed")
 
 
 
@@ -255,7 +325,7 @@ def init_server():
     
 	Sock_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	Sock_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-	Sock_server.bind(('', 7777))
+	Sock_server.bind(('',20000))
 	Sock_server.listen(5)
 	  
 	hostname=str(Sock_server.getsockname()[0])
@@ -273,7 +343,7 @@ def init_server():
 	        b=a.split(' ')
 	        print(b)
 
-	        thread.start_new_thread(Request_handler,(Sock_client,Addr_client,b))
+	        thread.start_new_thread(Request_handler,(Sock_client,Addr_client,b,Data_client))
 
 	    except KeyboardInterrupt:
 	        Sock_client.close()

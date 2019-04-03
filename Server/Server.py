@@ -1,16 +1,16 @@
 import sys
 import os
 import time
-import SocketServer
-import SimpleHTTPServer
+import socketserver
+import http.server
 
 if len(sys.argv) < 2:
-    print "Needs one argument: server port"
-    raise SystemExit
+    print("Needs one argument: server port")
+    raise(SystemExit)
 
 PORT = int(sys.argv[1])
 
-class HTTPCacheRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
+class HTTPCacheRequestHandler(http.server.SimpleHTTPRequestHandler):
     def send_head(self):
         if self.command != "POST" and self.headers.get('If-Modified-Since', None):
             name_file = self.path.strip("/")
@@ -21,18 +21,18 @@ class HTTPCacheRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
                     self.send_response(304)
                     self.end_headers()
                     return None
-        return SimpleHTTPServer.SimpleHTTPRequestHandler.send_head(self)
+        return http.server.SimpleHTTPRequestHandler.send_head(self)
 
     def end_headers(self):
         self.send_header('Cache-control', 'must-revalidate')
-        SimpleHTTPServer.SimpleHTTPRequestHandler.end_headers(self)
+        http.server.SimpleHTTPRequestHandler.end_headers(self)
 
     def do_POST(self):
         self.send_response(200)
         self.send_header('Cache-control', 'no-cache')
-        SimpleHTTPServer.SimpleHTTPRequestHandler.end_headers(self)
+        http.server.SimpleHTTPRequestHandler.end_headers(self)
 
-temp = SocketServer.ThreadingTCPServer(("", PORT), HTTPCacheRequestHandler)
+temp = socketserver.ThreadingTCPServer(("", PORT), HTTPCacheRequestHandler)
 temp.allow_reuse_address = True
-print "Serving on port", PORT
-s.serve_forever()
+print("Serving on port", PORT)
+temp.serve_forever()

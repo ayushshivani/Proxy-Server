@@ -13,7 +13,7 @@ SERVER_PORT = sys.argv[3]
 
 while True:
     file = "testfile.txt"
-    METHOD = "POST"
+    METHOD = "GET"
     curl_string = "curl --request " + METHOD + " --proxy 127.0.0.1:" + PROXY_PORT +" --local-port  " + CLIENT_PORT + " 127.0.0.1:" + SERVER_PORT + "/" + file
     os.system(curl_string)
     time.sleep(10)
